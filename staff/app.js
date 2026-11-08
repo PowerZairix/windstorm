@@ -4,7 +4,7 @@
     function mostrar(id) {
         pantallas.forEach((p) => { $(p).hidden = p !== id; });
     }
-
+ 
     const ERRORES = {
         estado_invalido: 'Algo no cuadró con Discord, intenta iniciar sesión de nuevo.',
         token: 'Discord no aceptó la solicitud, intenta de nuevo.',
@@ -14,14 +14,52 @@
         sin_rol: 'Tu cuenta está en el servidor, pero no tienes ningún rol de staff asignado.',
         inesperado: 'Algo salió mal. Intenta de nuevo en un momento.',
     };
-
+ 
+    const AUDIENCIAS = {
+        all: 'Todo el staff',
+        admin: 'Admins',
+        constructor: 'Constructores',
+        programador: 'Programadores',
+        moderacion: 'Moderación',
+        tester: 'Testers',
+    };
+ 
+    const POR_PAGINA = 8;
+    const CHEVRON = '<svg class="note-chev" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+ 
+    let usuario = null;
+    let notas = [];
+    let filtro = 'all';
+    let visibles = POR_PAGINA;
+ 
+    // Crea elementos del DOM sin usar innerHTML con texto de usuarios
+    function h(tag, props, ...hijos) {
+        const el = document.createElement(tag);
+        Object.entries(props || {}).forEach(([k, v]) => {
+            if (v === false || v == null) return;
+            if (k === 'class') el.className = v;
+            else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+            else el.setAttribute(k, v === true ? '' : v);
+        });
+        hijos.flat().forEach((c) => { if (c != null) el.append(c); });
+        return el;
+    }
+ 
+    function fechaCorta(iso) {
+        return new Date(iso).toLocaleString('es-MX', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    }
+ 
+    function soloFecha(iso) {
+        return new Date(iso).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' });
+    }
+ 
+    // ---------- Sesión ----------
     async function cargarSesion() {
-        const params = new URLSearchParams(location.search);
-        const error = params.get('error');
-
+        const error = new URLSearchParams(location.search).get('error');
+ 
         const res = await fetch('/api/session');
         const data = await res.json();
-
+ 
         if (!data.authenticated) {
             mostrar('pantalla-login');
             if (error) {
@@ -31,150 +69,174 @@
             }
             return;
         }
-
+ 
+        usuario = data.user;
         mostrar('pantalla-panel');
-        pintarUsuario(data.user);
+        $('user-nombre').textContent = usuario.username;
+        $('badge-dinamico').textContent = usuario.roleLabel;
+        $('user-avatar').src = usuario.avatar || 'https://cdn.discordapp.com/embed/avatars/0.png';
         cargarNotas();
     }
-
-    function pintarUsuario(user) {
-        $('user-nombre').textContent = user.username;
-        const badge = $('badge-dinamico');
-        badge.textContent = user.roleLabel;
-
-        const avatar = $('user-avatar');
-        avatar.src = user.avatar || 'https://cdn.discordapp.com/embed/avatars/0.png';
-    }
-
-    function fechaCorta(iso) {
-        const d = new Date(iso);
-        return d.toLocaleString('es-MX', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-    }
-
-    const AUDIENCIAS = {
-        all: 'Todo el staff',
-        admin: 'Admins',
-        constructor: 'Constructores',
-        programador: 'Programadores',
-        moderacion: 'Moderación',
-        tester: 'Testers',
-    };
-
-    function escapeHtml(str) {
-        const d = document.createElement('div');
-        d.textContent = str;
-        return d.innerHTML;
-    }
-
-    function renderNota(nota) {
-        const div = document.createElement('div');
-        div.className = 'note-card' + (nota.read ? '' : ' unread');
-        div.dataset.id = nota.id;
-
-        const readers = nota.readers || [];
-        const listaVistos = readers.length
-            ? readers.map((r) => `<li>${escapeHtml(r.username)} <span>· ${fechaCorta(r.read_at)}</span></li>`).join('')
-            : '<li class="empty">Nadie la ha visto todavía</li>';
-
-        div.innerHTML = `
-            <div class="note-top">
-                <span class="note-audience">${AUDIENCIAS[nota.audience] || nota.audience}</span>
-                ${nota.read ? '' : '<span class="note-dot" title="Sin leer"></span>'}
-            </div>
-            <h3>${escapeHtml(nota.title)}</h3>
-            <p>${escapeHtml(nota.body)}</p>
-            <div class="note-meta">
-                <span>Por ${escapeHtml(nota.created_by)} · ${fechaCorta(nota.created_at)}</span>
-                <span class="note-meta-actions">
-                    <button type="button" class="note-seen" aria-expanded="false">👁 ${readers.length}</button>
-                    ${nota.canDelete ? '<button type="button" class="note-delete" title="Borrar nota">🗑</button>' : ''}
-                </span>
-            </div>
-            <ul class="note-readers" hidden>${listaVistos}</ul>
-        `;
-
-        div.querySelector('.note-seen').addEventListener('click', (e) => {
-            const lista = div.querySelector('.note-readers');
-            const abierta = !lista.hidden;
-            lista.hidden = abierta;
-            e.currentTarget.setAttribute('aria-expanded', String(!abierta));
-        });
-
-        const btnBorrar = div.querySelector('.note-delete');
-        if (btnBorrar) {
-            btnBorrar.addEventListener('click', () => borrarNota(nota.id, div));
-        }
-
-        return div;
-    }
-
-    async function borrarNota(id, elemento) {
-        if (!confirm('¿Borrar esta nota? No se puede deshacer.')) return;
-
-        const res = await fetch('/api/notes?id=' + id, { method: 'DELETE' });
-        if (res.ok) {
-            elemento.remove();
-        } else {
-            alert('No se pudo borrar la nota.');
-        }
-    }
-
+ 
+    // ---------- Notas ----------
     async function cargarNotas() {
         const cont = $('lista-notas');
-        cont.textContent = 'Cargando notas…';
-
+        cont.replaceChildren(h('p', { class: 'hint' }, 'Cargando notas…'));
+ 
         const res = await fetch('/api/notes');
         if (!res.ok) {
-            cont.textContent = 'No se pudieron cargar las notas.';
+            cont.replaceChildren(h('p', { class: 'hint' }, 'No se pudieron cargar las notas.'));
             return;
         }
-        const data = await res.json();
-
-        cont.innerHTML = '';
-        if (data.notes.length === 0) {
-            cont.innerHTML = '<p class="hint">Todavía no hay notas.</p>';
-            return;
-        }
-
-        data.notes.forEach((nota) => cont.appendChild(renderNota(nota)));
-
-        // Marcar como vistas las que aparecen en pantalla y aún no se habían visto
-        cont.querySelectorAll('.note-card.unread').forEach((el) => {
-            const id = Number(el.dataset.id);
-            fetch('/api/notes-read', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ noteId: id }),
-            }).then(() => {
-                el.classList.remove('unread');
-                const dot = el.querySelector('.note-dot');
-                if (dot) dot.remove();
-            });
-        });
+        notas = (await res.json()).notes;
+        pintar();
     }
-
-    // ---------- Menú desplegable flotante de "¿Para quién es?" ----------
+ 
+    function pintar() {
+        const cont = $('lista-notas');
+        const sinLeer = notas.filter((n) => !n.read).length;
+        $('cuenta-todas').textContent = notas.length;
+        $('cuenta-sinleer').textContent = sinLeer;
+ 
+        const lista = filtro === 'unread' ? notas.filter((n) => !n.read) : notas;
+ 
+        if (lista.length === 0) {
+            const msg = filtro === 'unread' ? 'No tienes notas sin leer.' : 'Todavía no hay notas.';
+            cont.replaceChildren(h('p', { class: 'hint' }, msg));
+            $('btn-mas').hidden = true;
+            return;
+        }
+ 
+        cont.replaceChildren(...lista.slice(0, visibles).map(renderNota));
+        $('btn-mas').hidden = lista.length <= visibles;
+    }
+ 
+    function renderNota(nota) {
+        const readers = nota.readers || [];
+        const audiencia = AUDIENCIAS[nota.audience] || nota.audience;
+ 
+        const cabecera = h('button', { type: 'button', class: 'note-head', 'aria-expanded': 'false' },
+            h('span', { class: 'note-dot', title: nota.read ? '' : 'Sin leer' }),
+            h('span', { class: 'note-main' },
+                h('span', { class: 'note-title' }, nota.title),
+                h('span', { class: 'note-preview' }, nota.body.replace(/\s+/g, ' '))
+            ),
+            h('span', { class: 'note-side' },
+                h('span', { class: 'pill' }, audiencia),
+                h('span', { class: 'note-date' }, soloFecha(nota.created_at))
+            )
+        );
+        cabecera.insertAdjacentHTML('beforeend', CHEVRON);
+ 
+        const lectores = h('div', { class: 'readers', hidden: true });
+        const btnVistos = h('button', { type: 'button', class: 'link-btn' });
+        const textoVistos = () => { btnVistos.textContent = `👁 Visto por ${(nota.readers || []).length}`; };
+        textoVistos();
+ 
+        function pintarLectores() {
+            const r = nota.readers || [];
+            lectores.replaceChildren(...(r.length
+                ? r.map((x) => h('span', { class: 'chip' }, x.username, ' ', h('span', null, '· ' + fechaCorta(x.read_at))))
+                : [h('span', { class: 'empty' }, 'Nadie la ha visto todavía')]));
+        }
+        pintarLectores();
+ 
+        btnVistos.addEventListener('click', () => { lectores.hidden = !lectores.hidden; });
+ 
+        const acciones = h('div', { class: 'note-foot-actions' }, btnVistos);
+        if (nota.canDelete) {
+            acciones.append(h('button', { type: 'button', class: 'link-btn danger', onclick: () => borrarNota(nota.id) }, '🗑 Borrar'));
+        }
+ 
+        const cuerpo = h('div', { class: 'note-body', hidden: true },
+            h('div', { class: 'note-meta-mobile' }, `${audiencia} · ${soloFecha(nota.created_at)}`),
+            h('div', { class: 'note-text' }, nota.body),
+            h('div', { class: 'note-foot' },
+                h('span', null, `Por ${nota.created_by} · ${fechaCorta(nota.created_at)}`),
+                acciones
+            ),
+            lectores
+        );
+ 
+        const fila = h('div', { class: 'note' + (nota.read ? '' : ' unread'), 'data-id': nota.id }, cabecera, cuerpo);
+ 
+        cabecera.addEventListener('click', () => {
+            const abrir = cuerpo.hidden;
+            cuerpo.hidden = !abrir;
+            fila.classList.toggle('open', abrir);
+            cabecera.setAttribute('aria-expanded', String(abrir));
+            if (abrir && !nota.read) marcarVista(nota, fila, pintarLectores, textoVistos);
+        });
+ 
+        return fila;
+    }
+ 
+    // Se marca como vista solo cuando la abres
+    async function marcarVista(nota, fila, pintarLectores, textoVistos) {
+        const res = await fetch('/api/notes-read', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ noteId: nota.id }),
+        });
+        if (!res.ok) return;
+ 
+        nota.read = true;
+        nota.readers = (nota.readers || []).concat({ username: usuario.username, read_at: new Date().toISOString() });
+        fila.classList.remove('unread');
+        fila.querySelector('.note-dot').removeAttribute('title');
+        pintarLectores();
+        textoVistos();
+        $('cuenta-sinleer').textContent = notas.filter((n) => !n.read).length;
+    }
+ 
+    async function borrarNota(id) {
+        if (!confirm('¿Borrar esta nota? No se puede deshacer.')) return;
+ 
+        const res = await fetch('/api/notes?id=' + id, { method: 'DELETE' });
+        if (!res.ok) {
+            alert('No se pudo borrar la nota.');
+            return;
+        }
+        notas = notas.filter((n) => n.id !== id);
+        pintar();
+    }
+ 
+    // ---------- Filtros y "mostrar más" ----------
+    document.querySelectorAll('.tab').forEach((tab) => {
+        tab.addEventListener('click', () => {
+            filtro = tab.dataset.filtro;
+            visibles = POR_PAGINA;
+            document.querySelectorAll('.tab').forEach((t) => {
+                const activo = t === tab;
+                t.classList.toggle('is-active', activo);
+                t.setAttribute('aria-selected', String(activo));
+            });
+            pintar();
+        });
+    });
+ 
+    $('btn-mas').addEventListener('click', () => { visibles += POR_PAGINA; pintar(); });
+ 
+    // ---------- Ventana de "Nueva nota" ----------
     let audienciaSeleccionada = 'all';
-
+    const composer = $('composer');
+ 
     function initDropdownAudiencia() {
         const dropdown = $('audiencia-dropdown');
         const toggle = $('audiencia-toggle');
         const menu = $('audiencia-menu');
         const actual = $('audiencia-actual');
-
-        function abrir() {
-            menu.hidden = false;
-            toggle.setAttribute('aria-expanded', 'true');
-        }
+ 
         function cerrar() {
             menu.hidden = true;
             toggle.setAttribute('aria-expanded', 'false');
         }
-
+ 
         toggle.addEventListener('click', () => {
-            if (menu.hidden) abrir(); else cerrar();
+            menu.hidden = !menu.hidden;
+            toggle.setAttribute('aria-expanded', String(!menu.hidden));
         });
-
+ 
         menu.querySelectorAll('.dropdown-option').forEach((opt) => {
             opt.addEventListener('click', () => {
                 audienciaSeleccionada = opt.dataset.value;
@@ -186,47 +248,61 @@
                 cerrar();
             });
         });
-
-        document.addEventListener('click', (e) => {
-            if (!dropdown.contains(e.target)) cerrar();
-        });
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') cerrar();
-        });
+ 
+        document.addEventListener('click', (e) => { if (!dropdown.contains(e.target)) cerrar(); });
+        composer.addEventListener('close', cerrar);
     }
-
+ 
+    function abrirComposer() {
+        $('nota-error').hidden = true;
+        composer.showModal();
+        $('nota-titulo').focus();
+    }
+ 
     async function publicarNota() {
         const title = $('nota-titulo').value.trim();
         const body = $('nota-cuerpo').value.trim();
         const errorEl = $('nota-error');
         errorEl.hidden = true;
-
+ 
         if (!title || !body) {
             errorEl.textContent = 'Escribe un título y el contenido de la nota.';
             errorEl.hidden = false;
             return;
         }
-
+ 
         const res = await fetch('/api/notes', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title, body, audience: audienciaSeleccionada }),
         });
-
+ 
         if (!res.ok) {
             errorEl.textContent = 'No se pudo publicar la nota, intenta de nuevo.';
             errorEl.hidden = false;
             return;
         }
-
+ 
+        const { note } = await res.json();
+        notas.unshift(note);
         $('nota-titulo').value = '';
         $('nota-cuerpo').value = '';
-        cargarNotas();
+        composer.close();
+        filtro = 'all';
+        document.querySelectorAll('.tab').forEach((t) => {
+            const activo = t.dataset.filtro === 'all';
+            t.classList.toggle('is-active', activo);
+            t.setAttribute('aria-selected', String(activo));
+        });
+        pintar();
     }
-
+ 
+    $('btn-nueva').addEventListener('click', abrirComposer);
+    $('btn-cancelar').addEventListener('click', () => composer.close());
     $('btn-publicar').addEventListener('click', publicarNota);
     $('btn-salir').addEventListener('click', () => { location.href = '/api/auth/logout'; });
-
+ 
     initDropdownAudiencia();
     cargarSesion();
 })();
+ 
